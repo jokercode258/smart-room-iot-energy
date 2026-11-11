@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Room</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #1d2733; --muted: #6b7785; --line: #e3e8ee;
+    --accent: #1a7f64; --danger: #c8372d; --warn-bg: #fdecea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11161c; --card: #1a222b; --text: #e6edf3; --muted: #93a1b0; --line: #2a3541;
+            --accent: #3fbf96; --danger: #f06a5f; --warn-bg: #3a1e1c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+  .status { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .pill { padding: 3px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); }
+  .pill.ok::before, .pill.bad::before { content: "●"; margin-right: 6px; }
+  .pill.ok::before { color: var(--accent); } .pill.bad::before { color: var(--danger); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .label { color: var(--muted); font-size: 13px; }
+  .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .value small { font-size: 14px; color: var(--muted); font-weight: 500; }
+  .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; border-radius: 8px; padding: 10px 18px; cursor: pointer; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.off { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .tabs button { padding: 6px 14px; }
+  .tabs button.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chart-box { position: relative; height: 280px; }
+  #alerts { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+  #alerts li { padding: 8px 0; border-top: 1px solid var(--line); }
+  #alerts li:first-child { border-top: 0; }
+  .muted { color: var(--muted); }
+  .section { margin-bottom: 16px; }
+  #toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%) translateY(-150%);
+           width: min(92vw, 460px); background: var(--warn-bg); color: var(--danger); border: 2px solid var(--danger);
+           border-radius: 12px; padding: 14px 16px; font-weight: 600; transition: transform .3s; z-index: 10;
+           box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast button { margin-top: 10px; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<div id="toast" role="alert"><div id="toast-msg"></div><button onclick="hideToast()">Đã hiểu</button></div>
+<main>
+  <header>
+    <h1>Phòng <span id="room">…</span></h1>
+    <div class="status">
+      <span id="st-mqtt" class="pill bad">MQTT Cloud</span>
+      <span id="st-edge" class="pill bad">Node biên</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card"><div class="label">Công suất</div><div class="value"><span id="v-power">–</span> <small>W</small></div></div>
+    <div class="card"><div class="label">Điện áp</div><div class="value"><span id="v-voltage">–</span> <small>V</small></div></div>
+    <div class="card"><div class="label">Dòng điện</div><div class="value"><span id="v-current">–</span> <small>A</small></div></div>
+    <div class="card"><div class="label">Điện năng</div><div class="value"><span id="v-energy">–</span> <small>kWh</small></div></div>
+    <div class="card"><div class="label">Có người</div><div class="value" id="v-occ">–</div></div>
+  </div>
+
+  <div class="card section">
+    <h2>Điều khiển từ xa</h2>
+    <div class="controls">
+      <button class="on" onclick="sendCmd('turn_on_all')">Bật tất cả</button>
+      <button class="off" onclick="sendCmd('turn_off_all')">Tắt tất cả</button>
+      <span class="muted">Điều hòa: <b id="v-ac">–</b> · Đèn: <b id="v-light">–</b></span>
+    </div>
+    <div id="cmd-note" class="muted" style="margin-top:8px;font-size:13px"></div>
+  </div>
+
+  <div class="card section">
+    <div class="row">
+      <h2 style="margin:0">Lịch sử điện năng</h2>
+      <div class="tabs">
+        <button data-range="day" class="active">Ngày</button>
+        <button data-range="week">Tuần</button>
+        <button data-range="month">Tháng</button>
+      </div>
+    </div>
+    <div class="chart-box"><canvas id="chart"></canvas></div>
+    <div id="chart-note" class="muted" style="font-size:13px;margin-top:8px"></div>
+  </div>
+
+  <div class="card section">
+    <h2>Cảnh báo gần đây</h2>
+    <ul id="alerts"><li class="muted">Chưa có cảnh báo.</li></ul>
+  </div>
+</main>
+
+<script>
+let cfg, client, chart, range = 'day';
+const $ = (id) => document.getElementById(id);
+
+function setPill(id, ok) { $(id).className = 'pill ' + (ok ? 'ok' : 'bad'); }
+function showToast(msg) { $('toast-msg').textContent = '⚠ ' + msg; $('toast').classList.add('show'); }
+function hideToast() { $('toast').classList.remove('show'); }
+
+function addAlert(a) {
+  const ul = $('alerts');
+  if (ul.querySelector('.muted')) ul.innerHTML = '';
+  const li = document.createElement('li');
+  li.textContent = new Date(a.timestamp || a.ts).toLocaleString('vi-VN') + ' — ' + a.message;
+  ul.prepend(li);
+}
+
+function sendCmd(cmd) {
+  if (!client || !client.connected) { $('cmd-note').textContent = 'Chưa kết nối MQTT Cloud.'; return; }
+  client.publish(cfg.topics.cmd, JSON.stringify({ cmd }), { qos: 1 });
+  $('cmd-note').textContent = 'Đã gửi lệnh "' + cmd + '" lúc ' + new Date().toLocaleTimeString('vi-VN');
+}
+
+function connectMqtt() {
+  client = mqtt.connect(cfg.mqttUrl || `ws://${location.hostname}:8000/mqtt`, {
+    username: cfg.username, password: cfg.password,
+    clientId: 'app_' + Math.random().toString(16).slice(2, 8),
+  });
+  client.on('connect', () => {
+    setPill('st-mqtt', true);
+    client.subscribe(Object.values(cfg.topics).filter((t) => t !== cfg.topics.cmd), { qos: 1 });
+  });
+  client.on('close', () => setPill('st-mqtt', false));
+  client.on('message', (topic, msg) => {
+    let d; try { d = JSON.parse(msg.toString()); } catch { return; }
+    if (topic === cfg.topics.telemetry) {
+      $('v-power').textContent = d.power;
+      $('v-voltage').textContent = d.voltage;
+      $('v-current').textContent = d.current;
+      $('v-energy').textContent = Number(d.energy_kwh).toFixed(3);
+      $('v-occ').textContent = d.room_occupied ? 'Có' : 'Không';
+    } else if (topic === cfg.topics.state) {
+      $('v-ac').textContent = d.relay_ac; $('v-light').textContent = d.relay_light;
+    } else if (topic === cfg.topics.edgeStatus) {
+      setPill('st-edge', d.online);
+    } else if (topic === cfg.topics.alert) {
+      showToast(d.message); addAlert(d);
+      if (navigator.vibrate) navigator.vibrate(300);
+    }
+  });
+}
+
+async function loadHistory() {
+  const res = await fetch(`/api/history/room/${cfg.room}?range=${range}`).then((r) => r.json());
+  const fmt = res.unit === 'hour'
+    ? (t) => new Date(t).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    : (t) => new Date(t).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+  const labels = res.data.map((r) => fmt(r.time));
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim(), muted = css.getPropertyValue('--muted').trim();
+  const datasets = [
+    { type: 'bar', label: 'Điện năng (kWh)', data: res.data.map((r) => r.energy_kwh), backgroundColor: accent, yAxisID: 'y' },
+    { type: 'line', label: 'Công suất TB (W)', data: res.data.map((r) => r.avg_power), borderColor: muted, backgroundColor: muted, yAxisID: 'y1', tension: .3 },
+  ];
+  if (chart) chart.destroy();
+  chart = new Chart($('chart'), {
+    data: { labels, datasets },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: muted } } },
+      scales: {
+        x: { ticks: { color: muted }, grid: { display: false } },
+        y: { position: 'left', title: { display: true, text: 'kWh', color: muted }, ticks: { color: muted } },
+        y1: { position: 'right', title: { display: true, text: 'W', color: muted }, ticks: { color: muted }, grid: { drawOnChartArea: false } },
+      },
+    },
+  });
+  $('chart-note').textContent = res.data.length
+    ? `${res.data.reduce((s, r) => s + r.samples, 0)} bản ghi · theo ${res.unit === 'hour' ? 'giờ' : 'ngày'}`
+    : 'Chưa có dữ liệu trong khoảng này.';
+}
+
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
+  range = b.dataset.range; loadHistory();
+}));
+
+(async () => {
+  cfg = await fetch('/api/config').then((r) => r.json());
+  $('room').textContent = cfg.room;
+  connectMqtt();
+  loadHistory();
+  setInterval(loadHistory, 60000);
+  fetch(`/api/alerts/room/${cfg.room}`).then((r) => r.json()).then((r) => r.data.reverse().forEach(addAlert));
+})();
+</script>
+</body>
+</html>

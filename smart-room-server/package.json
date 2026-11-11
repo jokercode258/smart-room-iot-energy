@@ -1,6 +1,16 @@
 {
   "dependencies": {
+    "dotenv": "^18.0.10",
     "express": "^5.3.0",
+    "mongodb": "^7.8.0",
     "mqtt": "^5.16.1"
+  },
+  "name": "smart-room-server",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "edge": "node edge_server.js",
+    "cloud": "node cloud_server.js",
+    "legacy": "node node_server.js"
   }
 }
